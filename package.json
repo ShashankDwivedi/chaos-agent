@@ -1,0 +1,59 @@
+{
+  "name": "harness-chaos-advisor-agent",
+  "version": "1.0.0",
+  "description": "Chaos Engineering Advisor Agent — AI-powered resilience testing via Harness Chaos. Manage experiments, faults, probes, infrastructure, ChaosGuard, and recommendations through MCP tools.",
+  "type": "module",
+  "main": "build/index.js",
+  "bin": {
+    "harness-chaos-advisor-agent": "build/index.js"
+  },
+  "files": [
+    "build/"
+  ],
+  "scripts": {
+    "build": "tsc && npm run build:copy-assets",
+    "build:copy-assets": "node -e \"const fs=require('fs'),path=require('path');fs.mkdirSync('build/docs',{recursive:true});fs.copyFileSync('src/docs/chaos-guide.md','build/docs/chaos-guide.md');console.log('Copied chaos-guide.md');\"",
+    "dev": "npm run build && concurrently \"npm:dev:watch\" \"npm:dev:serve\"",
+    "dev:watch": "tsc --watch",
+    "dev:serve": "nodemon --watch build --ext js --delay 1 --exec \"node --env-file=.env build/index.js http\"",
+    "start": "node build/index.js stdio",
+    "start:http": "node --env-file=.env build/index.js http",
+    "inspect": "npx @modelcontextprotocol/inspector node build/index.js stdio",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "docker:build": "docker build -t harness-chaos-advisor-agent .",
+    "docker:run": "docker run --rm -p 3000:3000 --env-file .env harness-chaos-advisor-agent",
+    "prepublishOnly": "pnpm build"
+  },
+  "keywords": [
+    "mcp",
+    "harness",
+    "chaos-engineering",
+    "resilience-testing",
+    "model-context-protocol",
+    "ai-agent",
+    "chaos",
+    "litmus"
+  ],
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "@types/pdfkit": "^0.17.6",
+    "express": "^5.2.1",
+    "pdfkit": "^0.18.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^22.13.5",
+    "concurrently": "^9.1.2",
+    "nodemon": "^3.1.9",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.6"
+  },
+  "packageManager": "pnpm@10.18.2",
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

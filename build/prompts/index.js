@@ -1,0 +1,11 @@
+import { registerResilienceAssessmentPrompt } from "./resilience-assessment.js";
+import { registerExperimentAnalysisPrompt } from "./experiment-analysis.js";
+import { registerInfraHealthCheckPrompt } from "./infra-health-check.js";
+import { registerChaosRecommendationsPrompt } from "./chaos-recommendations.js";
+export function registerAllPrompts(server) {
+    registerResilienceAssessmentPrompt(server);
+    registerExperimentAnalysisPrompt(server);
+    registerInfraHealthCheckPrompt(server);
+    registerChaosRecommendationsPrompt(server);
+}
+//# sourceMappingURL=index.js.map
