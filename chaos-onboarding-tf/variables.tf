@@ -34,7 +34,7 @@ variable "project_identifier" {
 }
 
 variable "delegate_selectors" {
-  description = "Delegate selectors for the Kubernetes connector (delegate tags)"
+  description = "Delegate selectors (tags) for the Kubernetes connector"
   type        = list(string)
 }
 
@@ -48,66 +48,6 @@ variable "k8s_connector_name" {
   description = "Display name for the Kubernetes connector"
   type        = string
   default     = "Chaos K8s Connector"
-}
-
-variable "environment_name" {
-  description = "Name of the Harness environment"
-  type        = string
-  default     = "Chaos Environment"
-}
-
-variable "environment_identifier" {
-  description = "Identifier for the environment"
-  type        = string
-  default     = "chaos_environment"
-}
-
-variable "environment_type" {
-  description = "Environment type: PreProduction or Production"
-  type        = string
-  default     = "PreProduction"
-}
-
-variable "infrastructure_name" {
-  description = "Name of the Harness infrastructure definition"
-  type        = string
-  default     = "Chaos K8s Infrastructure"
-}
-
-variable "infrastructure_identifier" {
-  description = "Identifier for the infrastructure definition"
-  type        = string
-  default     = "chaos_k8s_infra"
-}
-
-variable "namespace" {
-  description = "Kubernetes namespace for chaos infrastructure"
-  type        = string
-  default     = "hce"
-}
-
-variable "chaos_infra_name" {
-  description = "Name of the chaos infrastructure"
-  type        = string
-  default     = "chaos-k8s-infra"
-}
-
-variable "chaos_infra_namespace" {
-  description = "Kubernetes namespace for chaos components"
-  type        = string
-  default     = "hce"
-}
-
-variable "discovery_agent_name" {
-  description = "Name of the service discovery agent"
-  type        = string
-  default     = "chaos-discovery-agent"
-}
-
-variable "discovery_namespace" {
-  description = "Kubernetes namespace for service discovery"
-  type        = string
-  default     = "hce"
 }
 
 variable "tags" {

@@ -1,11 +1,10 @@
 # Harness Chaos Onboarding — terraform.tfvars
-# Fill in your values and run: terraform init && terraform apply
 
 harness_account_id = "SxuV0ChbRqWGSYClFlMQMQ"
-harness_api_key    = ""  # Set via TF_VAR_harness_api_key env var for security
+harness_api_key    = "pat.SxuV0ChbRqWGSYClFlMQMQ.6915a15f5176ec4f502fe8f6.xXH1gkbbuSWnIkv6mhgQ"
 
 # Delegate selectors (from your chosen delegate)
-delegate_selectors = ["my-k8s-delegate"]
+delegate_selectors = ["shashank-delegate"]
 
 # Organization
 org_name       = "Chaos Engineering"
@@ -18,24 +17,6 @@ project_identifier = "chaos_onboarding"
 # Kubernetes Connector
 k8s_connector_name       = "Chaos K8s Connector"
 k8s_connector_identifier = "chaos_k8s_connector"
-
-# Environment
-environment_name       = "Chaos Environment"
-environment_identifier = "chaos_environment"
-environment_type       = "PreProduction"
-
-# Infrastructure
-infrastructure_name       = "Chaos K8s Infrastructure"
-infrastructure_identifier = "chaos_k8s_infra"
-namespace                 = "hce"
-
-# Chaos Infrastructure
-chaos_infra_name      = "chaos-k8s-infra"
-chaos_infra_namespace = "hce"
-
-# Service Discovery Agent
-discovery_agent_name = "chaos-discovery-agent"
-discovery_namespace  = "hce"
 
 tags = {
   "managed_by" = "terraform"

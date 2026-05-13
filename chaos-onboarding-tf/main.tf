@@ -31,7 +31,7 @@ resource "harness_platform_project" "chaos_project" {
 }
 
 # -----------------------------------------------------------------------------
-# 3. Kubernetes Connector (using delegate)
+# 3. Kubernetes Connector (delegate assume-role method)
 # -----------------------------------------------------------------------------
 resource "harness_platform_connector_kubernetes" "chaos_k8s" {
   depends_on = [harness_platform_project.chaos_project]
@@ -50,98 +50,6 @@ resource "harness_platform_connector_kubernetes" "chaos_k8s" {
 }
 
 # -----------------------------------------------------------------------------
-# 4. Environment
-# -----------------------------------------------------------------------------
-resource "harness_platform_environment" "chaos_env" {
-  depends_on = [harness_platform_project.chaos_project]
-
-  identifier = var.environment_identifier
-  name       = var.environment_name
-  org_id     = harness_platform_organization.chaos_org.id
-  project_id = harness_platform_project.chaos_project.id
-  type       = var.environment_type
-
-  description = "Environment for chaos engineering experiments"
-  tags        = local.tags_set
-}
-
-# -----------------------------------------------------------------------------
-# 5. Infrastructure Definition (Kubernetes Direct)
-# -----------------------------------------------------------------------------
-resource "harness_platform_infrastructure" "chaos_infra" {
-  depends_on = [
-    harness_platform_environment.chaos_env,
-    harness_platform_connector_kubernetes.chaos_k8s,
-  ]
-
-  identifier      = var.infrastructure_identifier
-  name            = var.infrastructure_name
-  org_id          = harness_platform_organization.chaos_org.id
-  project_id      = harness_platform_project.chaos_project.id
-  env_id          = harness_platform_environment.chaos_env.id
-  deployment_type = "Kubernetes"
-  type            = "KubernetesDirect"
-
-  yaml = <<-EOT
-  infrastructureDefinition:
-    name: ${var.infrastructure_name}
-    identifier: ${var.infrastructure_identifier}
-    orgIdentifier: ${harness_platform_organization.chaos_org.id}
-    projectIdentifier: ${harness_platform_project.chaos_project.id}
-    environmentRef: ${harness_platform_environment.chaos_env.id}
-    type: KubernetesDirect
-    deploymentType: Kubernetes
-    allowSimultaneousDeployments: false
-    spec:
-      connectorRef: ${harness_platform_connector_kubernetes.chaos_k8s.id}
-      namespace: ${var.namespace}
-      releaseName: release-${var.infrastructure_identifier}
-  EOT
-
-  tags = local.tags_set
-}
-
-# -----------------------------------------------------------------------------
-# 6. Chaos Infrastructure (enable chaos on the K8s infra)
-# -----------------------------------------------------------------------------
-resource "harness_chaos_infrastructure_v2" "chaos_infra" {
-  depends_on = [harness_platform_infrastructure.chaos_infra]
-
-  org_id         = harness_platform_organization.chaos_org.id
-  project_id     = harness_platform_project.chaos_project.id
-  environment_id = harness_platform_environment.chaos_env.id
-  infra_id       = harness_platform_infrastructure.chaos_infra.id
-  name           = var.chaos_infra_name
-  description    = "Chaos-enabled Kubernetes infrastructure"
-
-  namespace  = var.chaos_infra_namespace
-  infra_type = "KubernetesV2"
-
-  service_account = "hce"
-  tags            = local.tags_set
-}
-
-# -----------------------------------------------------------------------------
-# 7. Service Discovery Agent
-# -----------------------------------------------------------------------------
-resource "harness_service_discovery_agent" "chaos_discovery" {
-  depends_on = [harness_chaos_infrastructure_v2.chaos_infra]
-
-  name                   = var.discovery_agent_name
-  org_identifier         = harness_platform_organization.chaos_org.id
-  project_identifier     = harness_platform_project.chaos_project.id
-  environment_identifier = harness_platform_environment.chaos_env.id
-  infra_identifier       = harness_platform_infrastructure.chaos_infra.id
-  installation_type      = "CONNECTED"
-
-  config {
-    kubernetes {
-      namespace = var.discovery_namespace
-    }
-  }
-}
-
-# -----------------------------------------------------------------------------
 # Outputs
 # -----------------------------------------------------------------------------
 output "organization_id" {
@@ -157,24 +65,4 @@ output "project_id" {
 output "k8s_connector_id" {
   description = "Kubernetes connector identifier"
   value       = harness_platform_connector_kubernetes.chaos_k8s.id
-}
-
-output "environment_id" {
-  description = "Environment identifier"
-  value       = harness_platform_environment.chaos_env.id
-}
-
-output "infrastructure_id" {
-  description = "Infrastructure definition identifier"
-  value       = harness_platform_infrastructure.chaos_infra.id
-}
-
-output "chaos_infrastructure_id" {
-  description = "Chaos infrastructure identifier"
-  value       = harness_chaos_infrastructure_v2.chaos_infra.id
-}
-
-output "discovery_agent_name" {
-  description = "Service discovery agent name"
-  value       = harness_service_discovery_agent.chaos_discovery.name
 }

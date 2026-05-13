@@ -10,6 +10,10 @@ import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("chaos-onboard");
 
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
 interface DelegateInfo {
   delegateGroupId?: string;
   groupName?: string;
@@ -19,23 +23,40 @@ interface DelegateInfo {
   lastHeartBeat?: number;
 }
 
-/**
- * List delegates via the Harness API.
- * Uses POST /ng/api/delegate-setup/listDelegates with the account filter.
- */
-async function listDelegates(client: HarnessClient, config: Config): Promise<DelegateInfo[]> {
+interface DelegateListItem {
+  type?: string;
+  name?: string;
+  connected?: boolean;
+  lastHeartBeat?: number;
+  tags?: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Helpers — Delegate listing
+// ---------------------------------------------------------------------------
+
+async function listDelegates(client: HarnessClient, config: Config): Promise<DelegateListItem[]> {
   try {
     const raw = await client.request<unknown>({
       method: "POST",
       path: "/ng/api/delegate-setup/listDelegates",
-      body: {
-        filterType: "DelegateGroup",
-        accountId: config.HARNESS_ACCOUNT_ID,
-      },
+      body: { filterType: "Delegate" },
     });
 
-    const resp = raw as { resource?: { delegateGroupDetails?: DelegateInfo[] } };
-    return resp?.resource?.delegateGroupDetails ?? [];
+    const resp = raw as { resource?: DelegateListItem[] };
+    if (Array.isArray(resp?.resource)) {
+      return resp.resource;
+    }
+
+    const respGroup = raw as { resource?: { delegateGroupDetails?: DelegateInfo[] } };
+    const groups = respGroup?.resource?.delegateGroupDetails ?? [];
+    return groups.map((d) => ({
+      name: d.groupName ?? d.delegateGroupIdentifier ?? "unknown",
+      connected: d.activelyConnected ?? false,
+      type: d.delegateType ?? "unknown",
+      lastHeartBeat: d.lastHeartBeat,
+      tags: [d.groupName ?? d.delegateGroupIdentifier ?? "unknown"],
+    }));
   } catch (err) {
     log.warn("Failed to list delegates via POST, trying GET fallback", { error: String(err) });
     try {
@@ -43,13 +64,17 @@ async function listDelegates(client: HarnessClient, config: Config): Promise<Del
         method: "GET",
         path: "/ng/api/delegate-setup/listDelegates",
       });
-      const resp = raw as { resource?: { delegateGroupDetails?: DelegateInfo[] } };
-      return resp?.resource?.delegateGroupDetails ?? [];
+      const resp = raw as { resource?: DelegateListItem[] };
+      return resp?.resource ?? [];
     } catch {
       return [];
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Helpers — Terraform generators
+// ---------------------------------------------------------------------------
 
 function generateTerraformProvider(baseUrl: string): string {
   return `terraform {
@@ -106,7 +131,7 @@ variable "project_identifier" {
 }
 
 variable "delegate_selectors" {
-  description = "Delegate selectors for the Kubernetes connector (delegate tags)"
+  description = "Delegate selectors (tags) for the Kubernetes connector"
   type        = list(string)
 }
 
@@ -120,66 +145,6 @@ variable "k8s_connector_name" {
   description = "Display name for the Kubernetes connector"
   type        = string
   default     = "Chaos K8s Connector"
-}
-
-variable "environment_name" {
-  description = "Name of the Harness environment"
-  type        = string
-  default     = "Chaos Environment"
-}
-
-variable "environment_identifier" {
-  description = "Identifier for the environment"
-  type        = string
-  default     = "chaos_environment"
-}
-
-variable "environment_type" {
-  description = "Environment type: PreProduction or Production"
-  type        = string
-  default     = "PreProduction"
-}
-
-variable "infrastructure_name" {
-  description = "Name of the Harness infrastructure definition"
-  type        = string
-  default     = "Chaos K8s Infrastructure"
-}
-
-variable "infrastructure_identifier" {
-  description = "Identifier for the infrastructure definition"
-  type        = string
-  default     = "chaos_k8s_infra"
-}
-
-variable "namespace" {
-  description = "Kubernetes namespace for chaos infrastructure"
-  type        = string
-  default     = "hce"
-}
-
-variable "chaos_infra_name" {
-  description = "Name of the chaos infrastructure"
-  type        = string
-  default     = "chaos-k8s-infra"
-}
-
-variable "chaos_infra_namespace" {
-  description = "Kubernetes namespace for chaos components"
-  type        = string
-  default     = "hce"
-}
-
-variable "discovery_agent_name" {
-  description = "Name of the service discovery agent"
-  type        = string
-  default     = "chaos-discovery-agent"
-}
-
-variable "discovery_namespace" {
-  description = "Kubernetes namespace for service discovery"
-  type        = string
-  default     = "hce"
 }
 
 variable "tags" {
@@ -227,7 +192,7 @@ resource "harness_platform_project" "chaos_project" {
 }
 
 # -----------------------------------------------------------------------------
-# 3. Kubernetes Connector (using delegate)
+# 3. Kubernetes Connector (delegate assume-role method)
 # -----------------------------------------------------------------------------
 resource "harness_platform_connector_kubernetes" "chaos_k8s" {
   depends_on = [harness_platform_project.chaos_project]
@@ -246,98 +211,6 @@ resource "harness_platform_connector_kubernetes" "chaos_k8s" {
 }
 
 # -----------------------------------------------------------------------------
-# 4. Environment
-# -----------------------------------------------------------------------------
-resource "harness_platform_environment" "chaos_env" {
-  depends_on = [harness_platform_project.chaos_project]
-
-  identifier = var.environment_identifier
-  name       = var.environment_name
-  org_id     = harness_platform_organization.chaos_org.id
-  project_id = harness_platform_project.chaos_project.id
-  type       = var.environment_type
-
-  description = "Environment for chaos engineering experiments"
-  tags        = local.tags_set
-}
-
-# -----------------------------------------------------------------------------
-# 5. Infrastructure Definition (Kubernetes Direct)
-# -----------------------------------------------------------------------------
-resource "harness_platform_infrastructure" "chaos_infra" {
-  depends_on = [
-    harness_platform_environment.chaos_env,
-    harness_platform_connector_kubernetes.chaos_k8s,
-  ]
-
-  identifier      = var.infrastructure_identifier
-  name            = var.infrastructure_name
-  org_id          = harness_platform_organization.chaos_org.id
-  project_id      = harness_platform_project.chaos_project.id
-  env_id          = harness_platform_environment.chaos_env.id
-  deployment_type = "Kubernetes"
-  type            = "KubernetesDirect"
-
-  yaml = <<-EOT
-  infrastructureDefinition:
-    name: $\{var.infrastructure_name}
-    identifier: $\{var.infrastructure_identifier}
-    orgIdentifier: $\{harness_platform_organization.chaos_org.id}
-    projectIdentifier: $\{harness_platform_project.chaos_project.id}
-    environmentRef: $\{harness_platform_environment.chaos_env.id}
-    type: KubernetesDirect
-    deploymentType: Kubernetes
-    allowSimultaneousDeployments: false
-    spec:
-      connectorRef: $\{harness_platform_connector_kubernetes.chaos_k8s.id}
-      namespace: $\{var.namespace}
-      releaseName: release-$\{var.infrastructure_identifier}
-  EOT
-
-  tags = local.tags_set
-}
-
-# -----------------------------------------------------------------------------
-# 6. Chaos Infrastructure (enable chaos on the K8s infra)
-# -----------------------------------------------------------------------------
-resource "harness_chaos_infrastructure_v2" "chaos_infra" {
-  depends_on = [harness_platform_infrastructure.chaos_infra]
-
-  org_id         = harness_platform_organization.chaos_org.id
-  project_id     = harness_platform_project.chaos_project.id
-  environment_id = harness_platform_environment.chaos_env.id
-  infra_id       = harness_platform_infrastructure.chaos_infra.id
-  name           = var.chaos_infra_name
-  description    = "Chaos-enabled Kubernetes infrastructure"
-
-  namespace  = var.chaos_infra_namespace
-  infra_type = "KubernetesV2"
-
-  service_account = "hce"
-  tags            = local.tags_set
-}
-
-# -----------------------------------------------------------------------------
-# 7. Service Discovery Agent
-# -----------------------------------------------------------------------------
-resource "harness_service_discovery_agent" "chaos_discovery" {
-  depends_on = [harness_chaos_infrastructure_v2.chaos_infra]
-
-  name                   = var.discovery_agent_name
-  org_identifier         = harness_platform_organization.chaos_org.id
-  project_identifier     = harness_platform_project.chaos_project.id
-  environment_identifier = harness_platform_environment.chaos_env.id
-  infra_identifier       = harness_platform_infrastructure.chaos_infra.id
-  installation_type      = "CONNECTED"
-
-  config {
-    kubernetes {
-      namespace = var.discovery_namespace
-    }
-  }
-}
-
-# -----------------------------------------------------------------------------
 # Outputs
 # -----------------------------------------------------------------------------
 output "organization_id" {
@@ -353,26 +226,6 @@ output "project_id" {
 output "k8s_connector_id" {
   description = "Kubernetes connector identifier"
   value       = harness_platform_connector_kubernetes.chaos_k8s.id
-}
-
-output "environment_id" {
-  description = "Environment identifier"
-  value       = harness_platform_environment.chaos_env.id
-}
-
-output "infrastructure_id" {
-  description = "Infrastructure definition identifier"
-  value       = harness_platform_infrastructure.chaos_infra.id
-}
-
-output "chaos_infrastructure_id" {
-  description = "Chaos infrastructure identifier"
-  value       = harness_chaos_infrastructure_v2.chaos_infra.id
-}
-
-output "discovery_agent_name" {
-  description = "Service discovery agent name"
-  value       = harness_service_discovery_agent.chaos_discovery.name
 }
 `;
 }
@@ -402,24 +255,6 @@ project_identifier = "chaos_onboarding"
 k8s_connector_name       = "Chaos K8s Connector"
 k8s_connector_identifier = "chaos_k8s_connector"
 
-# Environment
-environment_name       = "Chaos Environment"
-environment_identifier = "chaos_environment"
-environment_type       = "PreProduction"
-
-# Infrastructure
-infrastructure_name       = "Chaos K8s Infrastructure"
-infrastructure_identifier = "chaos_k8s_infra"
-namespace                 = "hce"
-
-# Chaos Infrastructure
-chaos_infra_name      = "chaos-k8s-infra"
-chaos_infra_namespace = "hce"
-
-# Service Discovery Agent
-discovery_agent_name = "chaos-discovery-agent"
-discovery_namespace  = "hce"
-
 tags = {
   "managed_by" = "terraform"
   "purpose"    = "chaos-onboarding"
@@ -427,111 +262,345 @@ tags = {
 `;
 }
 
+function generateDiscoveryTf(): string {
+  return `# =============================================================================
+# Service Discovery Agent — appended by harness-chaos-advisor-agent
+# =============================================================================
+
+variable "discovery_agent_name" {
+  description = "Name of the service discovery agent"
+  type        = string
+  default     = "chaos-discovery-agent"
+}
+
+variable "discovery_org_identifier" {
+  description = "Organization identifier for the discovery agent"
+  type        = string
+}
+
+variable "discovery_project_identifier" {
+  description = "Project identifier for the discovery agent"
+  type        = string
+}
+
+variable "discovery_environment_identifier" {
+  description = "Environment identifier for the discovery agent"
+  type        = string
+}
+
+variable "discovery_infra_identifier" {
+  description = "Infrastructure identifier for the discovery agent"
+  type        = string
+}
+
+variable "discovery_namespace" {
+  description = "Kubernetes namespace for service discovery"
+  type        = string
+  default     = "hce"
+}
+
+resource "harness_service_discovery_agent" "chaos_discovery" {
+  name                   = var.discovery_agent_name
+  org_identifier         = var.discovery_org_identifier
+  project_identifier     = var.discovery_project_identifier
+  environment_identifier = var.discovery_environment_identifier
+  infra_identifier       = var.discovery_infra_identifier
+  installation_type      = "CONNECTED"
+
+  config {
+    kubernetes {
+      namespace = var.discovery_namespace
+    }
+  }
+}
+
+output "discovery_agent_name" {
+  description = "Service discovery agent name"
+  value       = harness_service_discovery_agent.chaos_discovery.name
+}
+`;
+}
+
+function generateDiscoveryTfvars(
+  orgId: string,
+  projectId: string,
+  envId: string,
+  infraId: string,
+  namespace: string,
+): string {
+  return `# Service Discovery Agent — terraform.tfvars (append or merge)
+
+discovery_org_identifier         = "${orgId}"
+discovery_project_identifier     = "${projectId}"
+discovery_environment_identifier = "${envId}"
+discovery_infra_identifier       = "${infraId}"
+discovery_namespace              = "${namespace}"
+discovery_agent_name             = "chaos-discovery-agent"
+`;
+}
+
+// ---------------------------------------------------------------------------
+// Helpers — REST API calls
+// ---------------------------------------------------------------------------
+
+async function createEnvironment(
+  client: HarnessClient,
+  orgId: string,
+  projectId: string,
+  envName: string,
+  envIdentifier: string,
+  envType: string,
+): Promise<{ identifier: string; name: string }> {
+  const yaml = `environment:
+  name: ${envName}
+  identifier: ${envIdentifier}
+  orgIdentifier: ${orgId}
+  projectIdentifier: ${projectId}
+  type: ${envType}
+  tags: {}`;
+
+  const raw = await client.request<unknown>({
+    method: "POST",
+    path: "/ng/api/environmentsV2",
+    params: { orgIdentifier: orgId, projectIdentifier: projectId },
+    body: { yaml },
+  });
+
+  const resp = raw as {
+    data?: { environment?: { identifier: string; name: string } };
+    status?: string;
+    code?: string;
+    message?: string;
+  };
+  if (resp?.data?.environment) {
+    return resp.data.environment;
+  }
+  throw new Error(resp?.message ?? "Failed to create environment");
+}
+
+async function createInfrastructure(
+  client: HarnessClient,
+  orgId: string,
+  projectId: string,
+  envId: string,
+  connectorRef: string,
+  infraName: string,
+  infraIdentifier: string,
+  namespace: string,
+): Promise<{ identifier: string; name: string }> {
+  const yaml = `infrastructureDefinition:
+  name: ${infraName}
+  identifier: ${infraIdentifier}
+  orgIdentifier: ${orgId}
+  projectIdentifier: ${projectId}
+  environmentRef: ${envId}
+  type: KubernetesDirect
+  deploymentType: Kubernetes
+  allowSimultaneousDeployments: false
+  spec:
+    connectorRef: ${connectorRef}
+    namespace: ${namespace}
+    releaseName: release-${infraIdentifier}`;
+
+  const raw = await client.request<unknown>({
+    method: "POST",
+    path: "/ng/api/infrastructures",
+    body: { yaml },
+  });
+
+  const resp = raw as {
+    data?: { infrastructure?: { identifier: string; name: string } };
+    status?: string;
+    message?: string;
+  };
+  if (resp?.data?.infrastructure) {
+    return resp.data.infrastructure;
+  }
+  throw new Error(resp?.message ?? "Failed to create infrastructure");
+}
+
+async function enableChaosV2(
+  client: HarnessClient,
+  orgId: string,
+  projectId: string,
+  envId: string,
+  infraIdentifier: string,
+  infraName: string,
+  namespace: string,
+  serviceAccount: string,
+): Promise<{ identity: string; token: string; uniqueId: string }> {
+  const raw = await client.request<unknown>({
+    method: "POST",
+    path: "/gateway/chaos/manager/api/rest/v2/infrastructure",
+    body: {
+      identity: infraIdentifier,
+      name: infraName,
+      orgIdentifier: orgId,
+      projectIdentifier: projectId,
+      environmentID: envId,
+      namespace,
+      serviceAccount,
+      infraType: "KubernetesV2",
+    },
+  });
+
+  const resp = raw as {
+    identity?: string;
+    token?: string;
+    uniqueId?: string;
+    message?: string;
+  };
+  if (resp?.identity) {
+    return {
+      identity: resp.identity,
+      token: resp.token ?? "",
+      uniqueId: resp.uniqueId ?? "",
+    };
+  }
+  throw new Error(resp?.message ?? "Failed to enable Chaos v2 infrastructure");
+}
+
+// ---------------------------------------------------------------------------
+// Tool registration
+// ---------------------------------------------------------------------------
+
 export function registerOnboardTool(server: McpServer, client: HarnessClient, config: Config): void {
   server.registerTool(
     "harness_chaos_onboard",
     {
       description:
-        "Automate Kubernetes chaos engineering onboarding. Lists available delegates, " +
-        "then generates a complete Terraform configuration that creates: Harness Organization, " +
-        "Project, Kubernetes Connector (using a delegate), Environment, Infrastructure, " +
-        "Chaos Infrastructure, and a Service Discovery Agent. The generated Terraform files " +
-        "are written to a local directory ready for `terraform init && terraform apply`.",
+        "Automate Kubernetes chaos engineering onboarding via a multi-step interactive workflow. " +
+        "Steps: (1) list delegates, (2) generate Terraform for org/project/connector, " +
+        "(3) create Harness Infrastructure via REST API, (4) enable Chaos v2 via REST API, " +
+        "(5) generate Terraform for Service Discovery Agent. " +
+        "Call with different 'step' values to progress through the workflow.",
       inputSchema: z.object({
+        step: z
+          .enum([
+            "list_delegates",
+            "create_terraform",
+            "create_infrastructure",
+            "enable_chaos",
+            "create_discovery_agent",
+          ])
+          .describe(
+            "Which step to execute. Start with 'list_delegates', then proceed " +
+            "through 'create_terraform' → 'create_infrastructure' → 'enable_chaos' → " +
+            "'create_discovery_agent'. Each step builds on the previous one.",
+          )
+          .default("list_delegates"),
+
+        // Terraform generation params
         output_dir: z
           .string()
-          .describe(
-            "Directory path where Terraform files will be written (e.g. './chaos-onboarding-tf'). Created if it doesn't exist.",
-          )
+          .describe("Directory for Terraform files")
           .default("./chaos-onboarding-tf"),
         delegate_selectors: z
           .array(z.string())
-          .describe(
-            "Delegate selectors (tags) to use for the Kubernetes connector. " +
-            "Call this tool first WITHOUT this parameter to list available delegates, " +
-            "then call again WITH the chosen delegate selector(s).",
-          )
+          .describe("Delegate selectors (tags) for the K8s connector. Required for 'create_terraform' step.")
           .optional(),
-        org_name: z.string().describe("Organization name").default("Chaos Engineering").optional(),
+
+        // Org & project
+        org_name: z.string().describe("Organization display name").default("Chaos Engineering").optional(),
         org_identifier: z.string().describe("Organization identifier").default("chaos_engineering").optional(),
-        project_name: z.string().describe("Project name").default("Chaos Onboarding").optional(),
+        project_name: z.string().describe("Project display name").default("Chaos Onboarding").optional(),
         project_identifier: z.string().describe("Project identifier").default("chaos_onboarding").optional(),
-        environment_name: z.string().describe("Environment name").default("Chaos Environment").optional(),
+
+        // Environment
+        environment_name: z.string().describe("Environment display name").default("Chaos Environment").optional(),
+        environment_identifier: z.string().describe("Environment identifier").default("chaos_environment").optional(),
         environment_type: z.enum(["PreProduction", "Production"]).describe("Environment type").default("PreProduction").optional(),
-        namespace: z.string().describe("Kubernetes namespace for chaos infrastructure").default("hce").optional(),
+
+        // Infrastructure
+        infrastructure_name: z.string().describe("Infrastructure display name").default("Chaos K8s Infrastructure").optional(),
+        infrastructure_identifier: z.string().describe("Infrastructure identifier").default("chaos_k8s_infra").optional(),
+        k8s_connector_identifier: z.string().describe("K8s connector identifier (from Terraform output)").default("chaos_k8s_connector").optional(),
+        namespace: z.string().describe("K8s namespace for infrastructure").default("hce").optional(),
+
+        // Chaos v2
+        chaos_namespace: z.string().describe("K8s namespace for chaos components (ask user)").default("hce").optional(),
+        chaos_service_account: z.string().describe("K8s service account for chaos (ask user)").default("hce").optional(),
+
+        // Discovery agent
+        discovery_namespace: z.string().describe("K8s namespace for service discovery").default("hce").optional(),
       }),
       annotations: {
-        title: "Chaos Onboarding (Terraform)",
+        title: "Chaos Onboarding (Multi-Step)",
         readOnlyHint: false,
         openWorldHint: true,
       },
     },
     async (args) => {
       try {
-        // Step 1: If no delegate_selectors provided, list delegates and return them
-        if (!args.delegate_selectors || args.delegate_selectors.length === 0) {
-          log.info("Listing delegates for user selection");
-          const delegates = await listDelegates(client, config);
+        switch (args.step) {
+          // ---------------------------------------------------------------
+          // Step 1: List delegates
+          // ---------------------------------------------------------------
+          case "list_delegates": {
+            log.info("Listing delegates for user selection");
+            const delegates = await listDelegates(client, config);
 
-          if (delegates.length === 0) {
+            if (delegates.length === 0) {
+              return jsonResult({
+                status: "no_delegates_found",
+                message:
+                  "No delegates found in your Harness account. " +
+                  "A Kubernetes-based delegate must be installed before proceeding with chaos onboarding.",
+                install_docs: "https://developer.harness.io/docs/platform/delegates/install-delegates/",
+                next_step:
+                  "Ask the user to install a Harness Kubernetes Delegate in their cluster, " +
+                  "then call harness_chaos_onboard(step='list_delegates') again.",
+              });
+            }
+
+            const delegateList = delegates.map((d) => ({
+              name: d.name ?? "unknown",
+              connected: d.connected ?? false,
+              type: d.type ?? "unknown",
+              tags: d.tags ?? [],
+              lastHeartbeat: d.lastHeartBeat
+                ? new Date(d.lastHeartBeat).toISOString()
+                : null,
+            }));
+
             return jsonResult({
-              status: "no_delegates_found",
+              status: "delegates_listed",
               message:
-                "No delegates found in your Harness account. " +
-                "Please install a Harness Delegate in your Kubernetes cluster first, " +
-                "then call this tool again. " +
-                "See: https://developer.harness.io/docs/platform/delegates/install-delegates/",
+                "Found the following delegates. Ask the user which delegate to use, " +
+                "then proceed to the 'create_terraform' step with the chosen delegate selector(s).",
+              delegates: delegateList,
               next_step:
-                "Install a Harness Delegate, then call harness_chaos_onboard again " +
-                "with delegate_selectors set to the delegate's tag/selector.",
+                "Ask the user to choose a delegate. Then call: " +
+                "harness_chaos_onboard(step='create_terraform', delegate_selectors=['<delegate_name>'])",
             });
           }
 
-          const delegateList = delegates.map((d) => ({
-            name: d.groupName ?? d.delegateGroupIdentifier ?? "unknown",
-            identifier: d.delegateGroupIdentifier ?? d.delegateGroupId ?? "unknown",
-            connected: d.activelyConnected ?? false,
-            type: d.delegateType ?? "unknown",
-            lastHeartbeat: d.lastHeartBeat
-              ? new Date(d.lastHeartBeat).toISOString()
-              : null,
-          }));
+          // ---------------------------------------------------------------
+          // Step 2: Generate Terraform (Org + Project + K8s Connector)
+          // ---------------------------------------------------------------
+          case "create_terraform": {
+            if (!args.delegate_selectors || args.delegate_selectors.length === 0) {
+              return errorResult(
+                "delegate_selectors is required for the 'create_terraform' step. " +
+                "Call harness_chaos_onboard(step='list_delegates') first to list available delegates.",
+              );
+            }
 
-          return jsonResult({
-            status: "delegates_listed",
-            message:
-              "Found the following delegates. Ask the user which delegate to use, " +
-              "then call harness_chaos_onboard again with delegate_selectors " +
-              "set to the chosen delegate's name/identifier.",
-            delegates: delegateList,
-            next_step:
-              "Ask the user to choose a delegate from the list above, " +
-              "then call harness_chaos_onboard with delegate_selectors=[\"<chosen_delegate_name>\"].",
-            example_call:
-              'harness_chaos_onboard(delegate_selectors=["<delegate_name>"], output_dir="./chaos-onboarding-tf")',
-          });
-        }
+            const outputDir = resolve(args.output_dir);
+            if (!existsSync(outputDir)) {
+              mkdirSync(outputDir, { recursive: true });
+            }
 
-        // Step 2: Generate Terraform files
-        const outputDir = resolve(args.output_dir);
-        if (!existsSync(outputDir)) {
-          mkdirSync(outputDir, { recursive: true });
-        }
+            writeFileSync(resolve(outputDir, "provider.tf"), generateTerraformProvider(config.HARNESS_BASE_URL), "utf-8");
+            writeFileSync(resolve(outputDir, "variables.tf"), generateVariablesTf(), "utf-8");
+            writeFileSync(resolve(outputDir, "main.tf"), generateMainTf(), "utf-8");
+            writeFileSync(
+              resolve(outputDir, "terraform.tfvars"),
+              generateTfvarsTemplate(config.HARNESS_ACCOUNT_ID, args.delegate_selectors),
+              "utf-8",
+            );
 
-        const providerTf = generateTerraformProvider(config.HARNESS_BASE_URL);
-        const variablesTf = generateVariablesTf();
-        const mainTf = generateMainTf();
-        const tfvars = generateTfvarsTemplate(
-          config.HARNESS_ACCOUNT_ID,
-          args.delegate_selectors,
-        );
-
-        writeFileSync(resolve(outputDir, "provider.tf"), providerTf, "utf-8");
-        writeFileSync(resolve(outputDir, "variables.tf"), variablesTf, "utf-8");
-        writeFileSync(resolve(outputDir, "main.tf"), mainTf, "utf-8");
-        writeFileSync(resolve(outputDir, "terraform.tfvars"), tfvars, "utf-8");
-
-        const readmeContent = `# Chaos Engineering Onboarding — Terraform
+            const readmeContent = `# Chaos Engineering Onboarding — Terraform
 
 Generated by \`harness-chaos-advisor-agent\`.
 
@@ -539,11 +608,7 @@ Generated by \`harness-chaos-advisor-agent\`.
 
 1. **Harness Organization** — \`${args.org_name ?? "Chaos Engineering"}\`
 2. **Harness Project** — \`${args.project_name ?? "Chaos Onboarding"}\`
-3. **Kubernetes Connector** — using delegate selector(s): \`${args.delegate_selectors.join(", ")}\`
-4. **Harness Environment** — \`${args.environment_name ?? "Chaos Environment"}\` (${args.environment_type ?? "PreProduction"})
-5. **Infrastructure Definition** — KubernetesDirect in namespace \`${args.namespace ?? "hce"}\`
-6. **Chaos Infrastructure** — enables chaos on the K8s infra
-7. **Service Discovery Agent** — auto-discovers services in the cluster
+3. **Kubernetes Connector** — using delegate selector(s): \`${args.delegate_selectors.join(", ")}\` (delegate assume-role method)
 
 ## Usage
 
@@ -567,46 +632,174 @@ terraform apply
 |------|---------|
 | \`provider.tf\` | Harness Terraform provider configuration |
 | \`variables.tf\` | All input variables with defaults |
-| \`main.tf\` | Resource definitions (org, project, connector, env, infra, discovery agent) |
+| \`main.tf\` | Resource definitions (org, project, connector) |
 | \`terraform.tfvars\` | Pre-filled variable values (edit as needed) |
 
-## Customization
+## Next Steps
 
-Edit \`terraform.tfvars\` to change names, identifiers, namespaces, or environment type before applying.
+After \`terraform apply\` succeeds, continue the onboarding by calling:
+- \`harness_chaos_onboard(step='create_infrastructure')\` to create the Harness Infrastructure
+- \`harness_chaos_onboard(step='enable_chaos')\` to enable Chaos v2
+- \`harness_chaos_onboard(step='create_discovery_agent')\` to set up Service Discovery
 `;
-        writeFileSync(resolve(outputDir, "README.md"), readmeContent, "utf-8");
+            writeFileSync(resolve(outputDir, "README.md"), readmeContent, "utf-8");
 
-        log.info("Terraform files generated", { outputDir });
+            log.info("Terraform files generated for org/project/connector", { outputDir });
 
-        return jsonResult({
-          status: "terraform_generated",
-          message: `Terraform configuration written to ${outputDir}`,
-          output_dir: outputDir,
-          files: [
-            "provider.tf",
-            "variables.tf",
-            "main.tf",
-            "terraform.tfvars",
-            "README.md",
-          ],
-          resources_to_create: [
-            "harness_platform_organization",
-            "harness_platform_project",
-            "harness_platform_connector_kubernetes",
-            "harness_platform_environment",
-            "harness_platform_infrastructure",
-            "harness_chaos_infrastructure_v2",
-            "harness_service_discovery_agent",
-          ],
-          delegate_selectors: args.delegate_selectors,
-          next_steps: [
-            `cd ${outputDir}`,
-            'export TF_VAR_harness_api_key="your-api-key"',
-            "terraform init",
-            "terraform plan",
-            "terraform apply",
-          ],
-        });
+            return jsonResult({
+              status: "terraform_generated",
+              message: `Terraform configuration written to ${outputDir}. This creates the Organization, Project, and Kubernetes Connector.`,
+              output_dir: outputDir,
+              files: ["provider.tf", "variables.tf", "main.tf", "terraform.tfvars", "README.md"],
+              resources_to_create: [
+                "harness_platform_organization",
+                "harness_platform_project",
+                "harness_platform_connector_kubernetes",
+              ],
+              delegate_selectors: args.delegate_selectors,
+              next_steps: [
+                `cd ${outputDir}`,
+                'export TF_VAR_harness_api_key="your-api-key"',
+                "terraform init",
+                "terraform plan",
+                "terraform apply",
+                "After apply succeeds → call harness_chaos_onboard(step='create_infrastructure') to create the Environment and Infrastructure Definition via REST API.",
+              ],
+            });
+          }
+
+          // ---------------------------------------------------------------
+          // Step 3: Create Environment + Infrastructure via REST API
+          // ---------------------------------------------------------------
+          case "create_infrastructure": {
+            const orgId = args.org_identifier ?? "chaos_engineering";
+            const projectId = args.project_identifier ?? "chaos_onboarding";
+            const envName = args.environment_name ?? "Chaos Environment";
+            const envId = args.environment_identifier ?? "chaos_environment";
+            const envType = args.environment_type ?? "PreProduction";
+            const infraName = args.infrastructure_name ?? "Chaos K8s Infrastructure";
+            const infraId = args.infrastructure_identifier ?? "chaos_k8s_infra";
+            const connectorRef = args.k8s_connector_identifier ?? "chaos_k8s_connector";
+            const ns = args.namespace ?? "hce";
+
+            log.info("Creating environment via REST API", { orgId, projectId, envName });
+            let env: { identifier: string; name: string };
+            try {
+              env = await createEnvironment(client, orgId, projectId, envName, envId, envType);
+              log.info("Environment created", { identifier: env.identifier });
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              if (msg.includes("already exists") || msg.includes("Duplicate")) {
+                log.info("Environment already exists, continuing", { envId });
+                env = { identifier: envId, name: envName };
+              } else {
+                throw err;
+              }
+            }
+
+            log.info("Creating infrastructure definition via REST API", { orgId, projectId, infraName });
+            const infra = await createInfrastructure(
+              client, orgId, projectId, env.identifier, connectorRef, infraName, infraId, ns,
+            );
+            log.info("Infrastructure created", { identifier: infra.identifier });
+
+            return jsonResult({
+              status: "infrastructure_created",
+              message: "Environment and Infrastructure Definition created successfully via REST API.",
+              environment: { identifier: env.identifier, name: env.name, type: envType },
+              infrastructure: { identifier: infra.identifier, name: infra.name },
+              next_step:
+                "Ask the user for the Kubernetes namespace and service account name for chaos components, " +
+                "then call harness_chaos_onboard(step='enable_chaos', " +
+                `org_identifier='${orgId}', project_identifier='${projectId}', ` +
+                `environment_identifier='${env.identifier}', infrastructure_identifier='${infra.identifier}', ` +
+                "chaos_namespace='<user_namespace>', chaos_service_account='<user_service_account>')",
+            });
+          }
+
+          // ---------------------------------------------------------------
+          // Step 4: Enable Chaos v2 via REST API
+          // ---------------------------------------------------------------
+          case "enable_chaos": {
+            const orgId = args.org_identifier ?? "chaos_engineering";
+            const projectId = args.project_identifier ?? "chaos_onboarding";
+            const envId = args.environment_identifier ?? "chaos_environment";
+            const infraId = args.infrastructure_identifier ?? "chaos_k8s_infra";
+            const infraName = args.infrastructure_name ?? "Chaos K8s Infrastructure";
+            const chaosNs = args.chaos_namespace ?? "hce";
+            const chaosSa = args.chaos_service_account ?? "hce";
+
+            log.info("Enabling Chaos v2 via REST API", { orgId, projectId, infraId });
+
+            const chaosInfra = await enableChaosV2(
+              client, orgId, projectId, envId, infraId, infraName, chaosNs, chaosSa,
+            );
+
+            log.info("Chaos v2 enabled", { identity: chaosInfra.identity, uniqueId: chaosInfra.uniqueId });
+
+            return jsonResult({
+              status: "chaos_enabled",
+              message: "Chaos v2 infrastructure enabled successfully.",
+              chaos_infrastructure: {
+                identity: chaosInfra.identity,
+                uniqueId: chaosInfra.uniqueId,
+                namespace: chaosNs,
+                serviceAccount: chaosSa,
+              },
+              next_step:
+                "Call harness_chaos_onboard(step='create_discovery_agent', " +
+                `org_identifier='${orgId}', project_identifier='${projectId}', ` +
+                `environment_identifier='${envId}', infrastructure_identifier='${infraId}', ` +
+                `discovery_namespace='${chaosNs}') ` +
+                "to generate the Service Discovery Agent Terraform and complete onboarding.",
+            });
+          }
+
+          // ---------------------------------------------------------------
+          // Step 5: Create Discovery Agent via Terraform
+          // ---------------------------------------------------------------
+          case "create_discovery_agent": {
+            const orgId = args.org_identifier ?? "chaos_engineering";
+            const projectId = args.project_identifier ?? "chaos_onboarding";
+            const envId = args.environment_identifier ?? "chaos_environment";
+            const infraId = args.infrastructure_identifier ?? "chaos_k8s_infra";
+            const discoveryNs = args.discovery_namespace ?? "hce";
+
+            const outputDir = resolve(args.output_dir);
+            if (!existsSync(outputDir)) {
+              mkdirSync(outputDir, { recursive: true });
+            }
+
+            writeFileSync(resolve(outputDir, "discovery.tf"), generateDiscoveryTf(), "utf-8");
+            writeFileSync(
+              resolve(outputDir, "discovery.tfvars"),
+              generateDiscoveryTfvars(orgId, projectId, envId, infraId, discoveryNs),
+              "utf-8",
+            );
+
+            log.info("Discovery agent Terraform files generated", { outputDir });
+
+            return jsonResult({
+              status: "discovery_terraform_generated",
+              message: `Service Discovery Agent Terraform written to ${outputDir}. Apply to complete onboarding.`,
+              output_dir: outputDir,
+              files: ["discovery.tf", "discovery.tfvars"],
+              next_steps: [
+                `cd ${outputDir}`,
+                'export TF_VAR_harness_api_key="your-api-key"  # if not already set',
+                "terraform init",
+                "terraform plan -var-file=discovery.tfvars",
+                "terraform apply -var-file=discovery.tfvars",
+              ],
+              onboarding_complete:
+                "After applying the discovery agent, chaos onboarding is complete. " +
+                "The user can now create and run chaos experiments in their Harness project.",
+            });
+          }
+
+          default:
+            return errorResult(`Unknown step: ${args.step}. Valid steps: list_delegates, create_terraform, create_infrastructure, enable_chaos, create_discovery_agent`);
+        }
       } catch (err) {
         if (isUserError(err)) return errorResult(err.message);
         if (isUserFixableApiError(err)) return errorResult(err.message);
